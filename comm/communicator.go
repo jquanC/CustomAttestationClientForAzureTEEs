@@ -325,23 +325,16 @@ func (c *Communicator) dial(peerName string) (net.Conn, error) {
 	return conn, nil
 }
 
-func (c *Communicator) Broadcast(msg Message) error {
-	data, err := msg.Serialize()
-	if err != nil {
-		c.logger.With("func", "Broadcast").Error("failed to serialize message", slog.String("err", err.Error()))
-		return err
-	}
-
-	c.logger.Debug("broadcast", slog.String("msg", msg.String()))
-
-	for _, peer := range c.peers {
-		c.wg.Add(1)
-		go func(peer *Peer) {
-			defer c.wg.Done()
-			if err := peer.Write(data); err != nil {
-				c.logger.With("func", "Broadcast").Error("failed to send message", slog.String("peer", peer.name), slog.String("err", err.Error()))
-			}
-		}(peer)
+func (c *Communicator) Broadcast(data []byte) error {
+	for _, name := range c.PeerNames() {
+		peer := c.GetPeer(name)
+		if peer == nil {
+			continue
+		}
+		if err := peer.Write(data); err != nil {
+			c.logger.With("func", "Broadcast").Error("failed to send message", slog.String("dest", peer.name), slog.String("err", err.Error()))
+			return err
+		}
 	}
 	return nil
 }
