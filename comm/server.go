@@ -33,7 +33,7 @@ func NewServer(
 		ctx:        ctx,
 		cfg:        cfg,
 		handleConn: handleConn,
-		logger:     logger.New(slog.LevelDebug).With("server", cfg.Name),
+		logger:     logger.New(logLvl).With("server", cfg.Name),
 	}
 }
 

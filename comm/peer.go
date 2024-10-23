@@ -31,7 +31,7 @@ type Peer struct {
 }
 
 func NewPeer(ctx context.Context, name string, conn net.Conn, msgCh chan []byte) *Peer {
-	peerlogger := logger.New(slog.LevelDebug).
+	peerlogger := logger.New(logLvl).
 		With("peer", name).
 		With("local", conn.LocalAddr().String()).
 		With("remote", conn.RemoteAddr().String())
@@ -107,4 +107,12 @@ func (p *Peer) safeWrite(data []byte) error {
 
 	_, err := p.conn.Write(data)
 	return err
+}
+
+func (p *Peer) SetName(name string) {
+	p.name = name
+	p.logger = logger.New(logLvl).
+		With("peer", name).
+		With("local", p.conn.LocalAddr().String()).
+		With("remote", p.conn.RemoteAddr().String())
 }
