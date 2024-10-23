@@ -112,7 +112,8 @@ func TestBroadcast(t *testing.T) {
 
 	for _, c := range cs {
 		msg := fmt.Sprintf("Broadcast message from %s", c.SelfName())
-		c.Broadcast([]byte(msg))
+		err := c.Broadcast([]byte(msg))
+		assert.NoError(t, err)
 	}
 
 	time.Sleep(1 * time.Second)
