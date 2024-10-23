@@ -16,7 +16,7 @@ import (
 
 var (
 	// Frequency to ping peers
-	FreqToPing  = 10 * time.Second
+	FreqToPing  = 5 * time.Second
 	MsgChanSize = 100
 
 	ErrPeerNotFound = errors.New("peer not found")
@@ -79,7 +79,7 @@ func NewCommunicator(
 		peers:         make(map[string]*Peer),
 		handleMessage: handleMessage,
 		msgCh:         make(chan []byte, MsgChanSize),
-		logger:        logger.New(slog.LevelDebug).With("communicator", cfg.Name),
+		logger:        logger.New(logLvl).With("communicator", cfg.Name),
 	}, nil
 }
 
@@ -124,13 +124,6 @@ func (c *Communicator) Start() error {
 		c.srv.Listen()
 	}()
 
-	// start the heartbeat loop
-	c.wg.Add(1)
-	go func() {
-		defer c.wg.Done()
-		c.heartbeatLoop()
-	}()
-
 	// connect to all peers
 	for _, name := range c.PeerNames() {
 		c.wg.Add(1)
@@ -141,6 +134,13 @@ func (c *Communicator) Start() error {
 	}
 
 	time.Sleep(FreqToPing)
+
+	// start the heartbeat loop
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		c.heartbeatLoop()
+	}()
 
 	// start the message handler loop
 	c.wg.Add(1)
@@ -274,7 +274,7 @@ func (c *Communicator) handleConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 	name := string(data)
-	peer.name = name
+	peer.SetName(name)
 
 	// set the peer
 	if !c.SetPeer(peer) {
