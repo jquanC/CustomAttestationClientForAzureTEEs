@@ -15,7 +15,8 @@ import (
 )
 
 var (
-	FreqToPing  = 5 * time.Second
+	// Frequency to ping peers
+	FreqToPing  = 10 * time.Second
 	MsgChanSize = 100
 
 	ErrPeerNotFound = errors.New("peer not found")
@@ -130,6 +131,17 @@ func (c *Communicator) Start() error {
 		c.heartbeatLoop()
 	}()
 
+	// connect to all peers
+	for _, name := range c.PeerNames() {
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			c.connect(name)
+		}()
+	}
+
+	time.Sleep(FreqToPing)
+
 	// start the message handler loop
 	c.wg.Add(1)
 	go func() {
@@ -141,15 +153,15 @@ func (c *Communicator) Start() error {
 }
 
 // SetPeer adds a new peer to the list of connected peers. It is thread-safe.
-func (c *Communicator) SetPeer(name string, conn net.Conn) bool {
+func (c *Communicator) SetPeer(peer *Peer) bool {
 	defer c.mu.Unlock()
 	c.mu.Lock()
 
-	if peer, ok := c.peers[name]; ok && peer != nil {
+	if peer, ok := c.peers[peer.name]; ok && peer != nil {
 		return false
 	}
 
-	c.peers[name] = NewPeer(c.ctx, name, conn, c.msgCh)
+	c.peers[peer.name] = peer
 
 	return true
 }
@@ -197,30 +209,11 @@ func (c *Communicator) heartbeatLoop() {
 			for _, name := range peerNames {
 				peer := c.GetPeer(name)
 				if peer == nil { // peer does not exist, try to reconnect
-					conn, err := c.dial(name)
-					if err != nil {
-						c.logger.With("func", "heartbeatLoop").Error("failed to dial", slog.String("peer", name), slog.String("err", err.Error()))
-						continue
-					}
-
-					// send name to the peer
-					if _, err := conn.Write([]byte(c.cfg.Name)); err != nil {
-						c.logger.With("func", "heartbeatLoop").Error("failed to send name to peer", slog.String("peer", name), slog.String("err", err.Error()))
-						conn.Close()
-						continue
-					}
-
-					if !c.SetPeer(name, conn) {
-						c.logger.With("func", "hearbeatLoop").Debug("failed to set peer, closing connection", slog.String("name", name))
-						conn.Close()
-						continue
-					}
-
 					c.wg.Add(1)
 					go func() {
 						defer c.wg.Done()
-						if peer := c.GetPeer(name); peer != nil {
-							peer.Listen()
+						if err := c.connect(name); err != nil {
+							c.logger.With("func", "hearbeatLoop").Error("failed to connect", slog.String("target", name), slog.String("err", err.Error()))
 						}
 					}()
 				} else { // peer exists, ping it
@@ -235,19 +228,56 @@ func (c *Communicator) heartbeatLoop() {
 	}
 }
 
+// connect
+//
+//	dials the peer,
+//	if success, sends the name to the peer,
+//	adds the peer to the list of connected peers,
+//	and if success, starts the listener.
+func (c *Communicator) connect(name string) error {
+	conn, err := c.dial(name)
+	if err != nil {
+		return err
+	}
+
+	peer := NewPeer(c.ctx, name, conn, c.msgCh)
+
+	// send name to the peer
+	if err := peer.Write([]byte(c.cfg.Name)); err != nil {
+		peer.Close()
+		return err
+	}
+
+	if !c.SetPeer(peer) {
+		c.logger.With("func", "hearbeatLoop").Debug("failed to set peer, closing connection", slog.String("name", name))
+		peer.Close()
+		return err
+	}
+
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		peer.Listen()
+	}()
+
+	return nil
+}
+
 func (c *Communicator) handleConn(ctx context.Context, conn net.Conn) {
+	peer := NewPeer(ctx, "", conn, c.msgCh)
+
 	// receive the peer name
-	buf := make([]byte, 1024)
-	n, err := conn.Read(buf)
+	data, err := peer.Read()
 	if err != nil {
 		c.logger.With("func", "handleConn").Error("failed to read peer name, closing connection", slog.String("err", err.Error()))
-		conn.Close()
+		peer.Close()
 		return
 	}
-	name := string(buf[:n])
+	name := string(data)
+	peer.name = name
 
 	// set the peer
-	if !c.SetPeer(name, conn) {
+	if !c.SetPeer(peer) {
 		c.logger.With("func", "handleConn").Debug("failed to set peer, closing connection", slog.String("peer", name))
 		conn.Close()
 		return
@@ -256,9 +286,7 @@ func (c *Communicator) handleConn(ctx context.Context, conn net.Conn) {
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
-		if peer := c.GetPeer(name); peer != nil {
-			peer.Listen()
-		}
+		peer.Listen()
 	}()
 }
 
@@ -298,11 +326,22 @@ func (c *Communicator) dial(peerName string) (net.Conn, error) {
 }
 
 func (c *Communicator) Broadcast(msg Message) error {
+	data, err := msg.Serialize()
+	if err != nil {
+		c.logger.With("func", "Broadcast").Error("failed to serialize message", slog.String("err", err.Error()))
+		return err
+	}
+
+	c.logger.Debug("broadcast", slog.String("msg", msg.String()))
+
 	for _, peer := range c.peers {
-		c.logger.With("action", "broadcast").Debug("sending mesage", slog.String("to", peer.name), slog.String("msg", msg.String()))
-		if _, err := peer.Send(msg); err != nil {
-			return err
-		}
+		c.wg.Add(1)
+		go func(peer *Peer) {
+			defer c.wg.Done()
+			if err := peer.Write(data); err != nil {
+				c.logger.With("func", "Broadcast").Error("failed to send message", slog.String("peer", peer.name), slog.String("err", err.Error()))
+			}
+		}(peer)
 	}
 	return nil
 }
