@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/zzGHzz/tls-node/logger"
@@ -21,7 +22,9 @@ type Peer struct {
 
 	name string
 	conn net.Conn
+	mu   sync.Mutex
 
+	// channel to send received messages to
 	msgCh chan []byte
 
 	logger *slog.Logger
@@ -52,36 +55,40 @@ func (p *Peer) Listen() {
 	ticker := time.NewTicker(FreqToRead)
 	defer ticker.Stop()
 
-	buf := make([]byte, MaxMsgSize)
-
 	for {
 		select {
 		case <-p.ctx.Done():
 			return
 		case <-ticker.C:
-			// p.conn.SetDeadline(time.Now().Add(ReadTimeout))
-			n, err := p.conn.Read(buf)
+			data, err := p.Read()
 			if err != nil { // when nothing read, n == 0 && err == EOF
 				continue
 			}
 
-			p.msgCh <- buf[:n]
+			p.msgCh <- data
 		}
 	}
 }
 
 // Send sends a message to the peer
-func (p *Peer) Send(msg Message) (int, error) {
-	if b, err := msg.Serialize(); err == nil {
-		return p.conn.Write(b)
-	} else {
-		return -1, err
+func (p *Peer) Write(data []byte) error {
+	return p.safeWrite(data)
+}
+
+func (p *Peer) Read() ([]byte, error) {
+	buf := make([]byte, MaxMsgSize)
+
+	n, err := p.conn.Read(buf)
+	if err != nil {
+		return nil, err
 	}
+
+	return buf[:n], nil
 }
 
 // Close closes the connection to the peer
 func (p *Peer) Close() {
-	defer p.logger.Debug("connection closed")
+	defer p.logger.Debug("peer closed")
 
 	if p.conn != nil {
 		p.conn.Close()
@@ -91,6 +98,13 @@ func (p *Peer) Close() {
 // Ping sends a ping message to the peer
 func (p *Peer) Ping() error {
 	msg := fmt.Sprintf("ping %s->%s", p.conn.LocalAddr().String(), p.conn.RemoteAddr().String())
-	_, err := p.conn.Write([]byte(msg))
+	return p.safeWrite([]byte(msg))
+}
+
+func (p *Peer) safeWrite(data []byte) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	_, err := p.conn.Write(data)
 	return err
 }

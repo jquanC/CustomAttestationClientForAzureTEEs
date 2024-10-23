@@ -66,13 +66,16 @@ func TestPeer(t *testing.T) {
 			fmt.Printf("srvHandleConn: ping err: %v\n", err)
 		}
 
-		if _, err = peer.Send(&MyMessage{
+		msg := &MyMessage{
 			MsgType:  MsgTypeCustom,
 			From:     conn.LocalAddr().String(),
 			To:       conn.RemoteAddr().String(),
 			Data:     []byte("1000"),
 			CreateAt: time.Now(),
-		}); err != nil {
+		}
+		data, _ := msg.Serialize()
+
+		if err := peer.Write(data); err != nil {
 			fmt.Printf("srvHandleConn: send msg err: %v\n", err)
 		}
 
@@ -102,13 +105,15 @@ func TestPeer(t *testing.T) {
 			fmt.Printf("clientHandleConn: ping err: %v\n", err)
 		}
 
-		if _, err := peer.Send(&MyMessage{
+		msg := &MyMessage{
 			MsgType:  MsgTypeCustom,
 			From:     conn.LocalAddr().String(),
 			To:       conn.RemoteAddr().String(),
 			Data:     []byte("1"),
 			CreateAt: time.Now(),
-		}); err != nil {
+		}
+		data, _ := msg.Serialize()
+		if err := peer.Write(data); err != nil {
 			fmt.Printf("clientHandleConn: send msg err: %v\n", err)
 		}
 
