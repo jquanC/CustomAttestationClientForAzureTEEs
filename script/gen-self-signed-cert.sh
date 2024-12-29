@@ -34,7 +34,7 @@ SUB="/C=SO/ST=Earth/L=Mountain/O=TEENet/OU=DEV/CN=localhost"
 
 # generate a self-signed root CA
 openssl req -newkey rsa:2048 \
-  -new -noenc -x509 \
+  -new -nodes -x509 \
   -days $DAYS \
   -out $CA_CERT \
   -keyout $CA_KEY \
