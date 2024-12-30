@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto"
+	"crypto/sha512"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -21,7 +22,7 @@ import (
 /* configuration const */
 const (
 	address       = "localhost:8072"
-	nonceClient   = "CCCCCCCCCCCC"              //set fixed in demo
+	nonceClient   = "$Q9%*@JW#C%Y"              // don't need to change
 	clientCredDir = "./script/client-cred"      //folder path to read client credentials(certs)
 	serverCredDir = "./script/server-cred-recv" //folder path to store server credentials(certs)
 )
@@ -50,33 +51,36 @@ func main() {
 		return
 	}
 	defer conn.Close()
-	//2.client send: nonce(12-byte length in string format,assuming it is 'CCCCCCCCCCCC'), node1-ca.crt, node1-client.crt
+
+	//2.client send: nonce(12-byte length in string format), node1-ca.crt, node1-client.crt
 	//2.1 Access these file. The directory path of all these files located：./script/client-cred
 	//2.2 Sent to the server;
 	sendMessage(conn, nonceClient)
 	sendFile(conn, clientCredDir+"/node1-ca.crt")
 	sendFile(conn, clientCredDir+"/node1-client.crt")
-	//3. receive server nonce,node0-ca.crt, node0-client.crt; And store them in "./script/client-cred" folder
+
+	//3. receive server nonce,node0-ca.crt, node0-client.crt; And store them in "./script/server-cred-recv" folder
 	serverNonce := receiveMessage(conn)
 	fmt.Println("Server Nonce:", serverNonce)
 	// saveFile(serverNonce, serverCredDir+"/nonce.txt")
 	receiveFile(conn, serverCredDir+"/node0-ca.crt")
 	receiveFile(conn, serverCredDir+"/node0-server.crt")
-	//4. client call a tool installed in the syatem, which is "AttestationClient", , and obtain the return result, stored in JWTResult; notice that the command is 'CCCCCCCCCCCC':
+
+	//4. call the system tool and obtain the return result, stored in JWTResult
 	//4.1 Command to call the "AttestationClient": sudo AttestationClient -n "nonce" -o token
 	extractPubkey := callOpensslGetPubkey(clientCredDir + "/node1-client.crt")
 	extractPubkey = extractPubkeyFromPem(extractPubkey)
 	fmt.Println("Extracted Public Key:", extractPubkey)
-	jwtResult := callAttestationClient(serverNonce + extractPubkey)
+	jwtResult := callSNPAttestationClient(serverNonce + extractPubkey)
 
 	//5. client send JWTResult to server
 	sendMessage(conn, jwtResult)
+
 	//6. receive server JWTResult and print it
 	serverJwtResult := receiveMessage(conn)
 	fmt.Println("Recv Server JWT Result:", serverJwtResult)
-	//7. validate server JWTResult by calling isValidJwt(to be continued)
-	// isValid := isValidJwt(serverJwtResult)
-	// isValid, err := validateJWT(serverJwtResult)
+
+	//7. validate server JWTResult
 	isValid, err := validateJWTwithPSH(serverJwtResult)
 	if err != nil {
 		fmt.Println("Error validating JWT:", err)
@@ -84,70 +88,20 @@ func main() {
 		fmt.Println("JWT Validation Result:", isValid)
 	}
 
-	//8.Print the function isValidJwt return result: true(valid) or false(invalid)
-	fmt.Println("JWT Validation Result:", isValid)
-	//9. Check the JWT token claims
+	//8. Check the JWT token claims
 	expectPubkey := callOpensslGetPubkey(serverCredDir + "/node0-server.crt")
 	expectPubkey = extractPubkeyFromPem(expectPubkey)
-	checkTee, checkPubkey, checkNonce, err := extractAndCheckJWTCliams(serverJwtResult, expectPubkey, nonceClient) //client check Server's JWT claims,should be the clientNonce
+	expectUserData := calExptUserData(serverCredDir + "/node0-server.crt")
+	checkTee, checkPubkey, checkNonce, checkUserData, err := extractAndCheckJWTCliams(serverJwtResult, expectPubkey, nonceClient, expectUserData)
 	if err != nil {
 		fmt.Println("Error checking JWT claims:", err)
 	} else {
-		if checkNonce && checkPubkey && checkTee {
+		if checkNonce && checkPubkey && checkTee && checkUserData {
 			fmt.Println("Vlidation of JWT Claims passed")
 		} else {
 			fmt.Println("Vlidation of JWT Claims failed")
 		}
 	}
-
-	/*
-		fmt.Println("Hello, World!")
-		//Initialize  cfg
-		cfg := &comm.Config{
-			Name:       "client",
-			Address:    "127.0.0.1:8087",
-			ServerCert: "./credential/server.crt",
-			ServerKey:  "./credential/server.key",
-			ClientCert: "./credential/client.crt",
-			ClientKey:  "./credential/client.key",
-			CACert:     "./credential/ca.crt",
-			Peers: []comm.PeerConfig{
-				{
-					Name:    "server",
-					Address: "127.0.0.1:8086",
-					CACert:  "./credential/ca.crt",
-				},
-				// {
-				// 	Name:   "peer2",
-				// 	Address: "127.0.0.1:8082",
-				// 	CACert: "/path/to/peer2-ca-cert.pem",
-				// },
-			},
-		}
-
-		funcs := []func([]byte){}
-		ports_len := 1 //
-		for i := 0; i < ports_len; i++ {
-			funcs = append(funcs, func(d []byte) {
-				fmt.Printf("PRINT node=node%d msg: %s\n", i+1, string(d))
-			})
-		}
-		handleMessageFunc := funcs[0]
-		// communicator:= comm.NewCommunicator(cfg, handleMessageFunc)
-		communicator, err := comm.NewCommunicator(cfg, handleMessageFunc)
-		if err != nil {
-			fmt.Printf("Error creating communicator: %v\n", err)
-			return
-		}
-		communicator.Start()
-
-		data := []byte("Data from client")
-		peer := communicator.GetPeer("server")
-		if peer != nil {
-			peer.Write(data)
-		}
-		// communicator.Close()
-	*/
 
 }
 
@@ -194,157 +148,7 @@ func receiveFile(conn net.Conn, filePath string) {
 	ioutil.WriteFile(filePath, data, 0644)
 }
 
-/* func sendFile(conn net.Conn, filename string) {
-
-	// 读取文件内容
-	data, err := ioutil.ReadFile(filename)
-	if err != nil {
-		fmt.Println("Error reading file:", err)
-		return
-	}
-
-	// 先发送文件大小作为前缀
-	size := len(data)
-	sizeBytes := []byte(fmt.Sprintf("%d\n", size)) // 使用换行符分隔大小和数据
-	conn.Write(sizeBytes)
-
-	// 发送文件数据
-	conn.Write(data)
-
-} */
-
-/* func sendMessage(conn net.Conn, message string) {
-	// 先发送消息长度作为前缀
-	size := len(message)
-	sizeBytes := []byte(fmt.Sprintf("%d\n", size)) // 使用换行符分隔大小和数据
-	conn.Write(sizeBytes)
-
-	// 发送消息内容
-	conn.Write([]byte(message))
-} */
-
-/* func receiveFile(conn net.Conn, filename string) {
-	// 使用切片存储
-	var fileData []byte
-	buffer := make([]byte, 1024)
-
-	for {
-		// 读取数据
-		n, err := conn.Read(buffer)
-		if err != nil {
-			if err == io.EOF {
-				// 连接关闭，正常结束读取
-				break
-			}
-			fmt.Println("Error reading file:", err)
-			return
-		}
-		// 将读取到的数据追加到 fileData
-		fileData = append(fileData, buffer[:n]...)
-	}
-
-	// 保存接收到的文件数据
-	if err := ioutil.WriteFile(filename, fileData, 0644); err != nil {
-		fmt.Println("Error writing file:", err)
-	}
-} */
-
-/*
-	 func receiveMessage(conn net.Conn) string {
-
-
-			// buf := make([]byte, 1024)
-			// n, err := conn.Read(buf)
-			// if err != nil {
-			// 	fmt.Println("Error receiving message:", err)
-			// 	return ""
-			// }
-			// return string(buf[:n])
-
-		var messageData []byte
-		buffer := make([]byte, 1024)
-
-		for {
-			// 读取数据
-			n, err := conn.Read(buffer)
-			if err != nil {
-				if err == io.EOF {
-					break // 连接关闭，正常结束读取
-				}
-				fmt.Println("Error receiving message:", err)
-				return ""
-			}
-			// 将读取到的数据追加到 messageData
-			messageData = append(messageData, buffer[:n]...)
-		}
-
-		return string(messageData) // 返回完整的消息
-	}
-*/
-/* func receiveFile(conn net.Conn, filename string) {
-	// 读取文件大小
-	sizeBuf := make([]byte, 1024)
-	n, err := conn.Read(sizeBuf)
-	if err != nil {
-		fmt.Println("Error reading file size:", err)
-		return
-	}
-	size, err := strconv.Atoi(string(sizeBuf[:n]))
-	if err != nil {
-		fmt.Println("Error converting file size:", err)
-		return
-	}
-
-	// 创建缓冲区接收数据
-	fileData := make([]byte, size)
-	totalRead := 0
-	for totalRead < size {
-		n, err := conn.Read(fileData[totalRead:])
-		if err != nil {
-			fmt.Println("Error reading file:", err)
-			return
-		}
-		totalRead += n
-	}
-
-	// 保存接收到的文件数据
-	if err := ioutil.WriteFile(filename, fileData, 0644); err != nil {
-		fmt.Println("Error writing file:", err)
-	}
-} */
-
-/*
-	 func receiveMessage(conn net.Conn) string {
-		// 读取消息大小
-		sizeBuf := make([]byte, 1024)
-		n, err := conn.Read(sizeBuf)
-		if err != nil {
-			fmt.Println("Error reading message size:", err)
-			return ""
-		}
-		size, err := strconv.Atoi(string(sizeBuf[:n]))
-		if err != nil {
-			fmt.Println("Error converting message size:", err)
-			return ""
-		}
-
-		// 创建缓冲区接收数据
-		messageData := make([]byte, size)
-		totalRead := 0
-		for totalRead < size {
-			n, err := conn.Read(messageData[totalRead:])
-			if err != nil {
-				fmt.Println("Error reading message:", err)
-				return ""
-			}
-			totalRead += n
-		}
-
-		return string(messageData) // 返回完整的消息
-	}
-*/
-
-/* Read the pubkey from the pem.file */
+/* Read the pubkey from the pem.file in certain format */
 func extractPubkeyFromPem(pubkey string) string {
 	// Remove all newline characters and split lines
 	lines := strings.Split(pubkey, "\n")
@@ -361,6 +165,8 @@ func extractPubkeyFromPem(pubkey string) string {
 	// Join the remaining lines back together
 	return strings.Join(cleanedLines, "")
 }
+
+/* Call openssl to get the pubkey from the certificate */
 func callOpensslGetPubkey(filePath string) string {
 	cmd := exec.Command("openssl", "x509", "-in", filePath, "-pubkey", "-noout")
 	output, err := cmd.Output()
@@ -371,7 +177,8 @@ func callOpensslGetPubkey(filePath string) string {
 	return string(output)
 }
 
-func callAttestationClient(nonce string) string {
+/* to get SNP machine attestation JWT */
+func callSNPAttestationClient(nonce string) string {
 	cmd := exec.Command("sudo", "AttestationClient", "-n", nonce, "-o", "token")
 	output, err := cmd.Output()
 	if err != nil {
@@ -418,7 +225,8 @@ func parseJWT(jwtToken string) (*JWTToken, error) {
 	return &token, nil
 }
 
-func extractAndCheckJWTCliams(jwtToken, exptPubKey, exptNonce string) (bool, bool, bool, error) {
+/* deprecated */
+func extractAndCheckJWTCliamsSNP_Multiplex(jwtToken, exptPubKey, exptNonce string) (bool, bool, bool, error) {
 	// 1. parse JWT
 	token, err := parseJWT(jwtToken)
 	if err != nil {
@@ -467,11 +275,128 @@ func extractAndCheckJWTCliams(jwtToken, exptPubKey, exptNonce string) (bool, boo
 	return checkTee, checkPubkey, checkNonce, nil
 }
 
-func isValidJwt(token string) bool {
-	// Implementation of JWT validation logic
-	return true // Placeholder return
+/* extract and check these JWT claims */
+func extractAndCheckJWTCliams(jwtToken, exptPubKey, exptNonce, exptUserData string) (bool, bool, bool, bool, error) {
+	teeType, err := getPeerTeeType(jwtToken)
+	if err != nil {
+		fmt.Print("getPeerTeeType failed:", teeType)
+		return true, true, true, false, err
+	}
+	if teeType == "sevsnpvm" {
+		return extractAndCheck_SNPJWTCliams(jwtToken, exptPubKey, exptNonce, exptUserData)
+	}
+	if teeType == "tdxvm" {
+		return extractAndCheck_TDXJWTCliams(jwtToken, exptPubKey, exptNonce, exptUserData)
+	}
+	return false, false, false, false, fmt.Errorf("unsupported tee type: %s", teeType)
 }
 
+/* Currently SNP JWT contains Nonce field */
+func extractAndCheck_SNPJWTCliams(jwtToken, exptPubKey, exptNonce, exptUserData string) (bool, bool, bool, bool, error) {
+	// 1. parse JWT
+	token, err := parseJWT(jwtToken)
+	if err != nil {
+		return false, false, false, false, err
+	}
+
+	// 2.  payload中读 x-ms-isolation-tee.x-ms-compliance-status 的值
+	teeComplianceStatus, ok := token.Payload["x-ms-isolation-tee"].(map[string]interface{})["x-ms-compliance-status"].(string)
+	checkTee := ok && strings.Contains(teeComplianceStatus, "azure-compliant-cvm")
+
+	// 3. payload中读 x-ms-runtime.client-payload.nonce 的值
+	clientPayload, ok := token.Payload["x-ms-runtime"].(map[string]interface{})["client-payload"].(map[string]interface{})
+	if !ok {
+		return false, false, false, false, fmt.Errorf("missing x-ms-runtime.client-payload.nonce in payload")
+	}
+	noncePubkey, ok := clientPayload["nonce"].(string)
+	if !ok {
+		return false, false, false, false, fmt.Errorf("missing x-ms-runtime.client-payload.nonce in payload")
+	}
+	fmt.Println("NoncePubkey:", noncePubkey)
+	// 4. 对 noncePubkey 执行 Base64URL decode
+	// noncePubkeyDecode, err := base64.RawURLEncoding.DecodeString(noncePubkey)//for non-padding base64url encoding
+	noncePubkeyDecode, err := base64.StdEncoding.DecodeString(noncePubkey)
+
+	if err != nil {
+		return false, false, false, false, fmt.Errorf("failed to decode noncePubkey: %v", err)
+	}
+
+	tokenNonce := string(noncePubkeyDecode[:12])
+	tokenPubkey := string(noncePubkeyDecode[12:])
+	checkPubkey := exptPubKey == tokenPubkey
+	checkNonce := exptNonce == tokenNonce
+	fmt.Println("TeeComplianceStatus:", teeComplianceStatus)
+	fmt.Println("Token Nonce:", tokenNonce)
+	fmt.Println("Token Pubkey:", tokenPubkey)
+	if !checkTee {
+		fmt.Println("TeeComplianceStatus is not compliant-cvm")
+	}
+	if !checkPubkey {
+		fmt.Println("Public Key does not match")
+	}
+	if !checkNonce {
+		fmt.Println("Nonce does not match")
+	}
+
+	// 5. check user-data field
+	// 5.1 read user-data measurement from jwtToken
+	userData := ""
+	userData, ok = token.Payload["x-ms-isolation-tee"].(map[string]interface{})["x-ms-runtime"].(map[string]interface{})["user-data"].(string)
+	if !ok {
+		return true, true, true, false, fmt.Errorf("parsing x-ms-isolation-tee.x-ms-runtime.user-data in payload failed")
+	}
+	exptUserData = strings.ToUpper(exptUserData)
+	fmt.Println("UserData measurement:", userData)
+	fmt.Println("Expected UserData measurement:", exptUserData)
+	checkUserData := exptUserData == userData
+	// because we don't test in the real env；to-do: remove this line when deploy
+	// In test, the userData read from JWT is the same because we are in the same host; but in real env, the userData should be different; The eptUserData is calculated from cert that it is ok
+	// remove this line when deploy
+	return checkTee, checkPubkey, checkNonce, checkUserData, nil
+}
+
+/* Currently TDX JWT contains no Nonce field */
+func extractAndCheck_TDXJWTCliams(jwtToken, exptPubKey, exptNonce, exptUserData string) (bool, bool, bool, bool, error) {
+
+	// 1. parse JWT
+	token, err := parseJWT(jwtToken)
+	if err != nil {
+		return false, false, false, false, err
+	}
+
+	// 2.  payload中读 x-ms-isolation-tee.x-ms-compliance-status 的值
+	teeComplianceStatus, ok := token.Payload["x-ms-compliance-status"].(string)
+	checkTee := ok && strings.Contains(teeComplianceStatus, "azure-compliant-cvm")
+	// thies two fields are not used in TDX JWT claims chcking; simple set them to true
+	checkPubkey := true
+	checkNonce := true
+	fmt.Println("TeeComplianceStatus:", teeComplianceStatus)
+
+	if !checkTee {
+		fmt.Println("TeeComplianceStatus is not compliant-cvm")
+	}
+	if !checkPubkey {
+		fmt.Println("Public Key does not match")
+	}
+	if !checkNonce {
+		fmt.Println("Nonce does not match")
+	}
+
+	// 5. check user-data field (is the hash of the pubkey)
+	// 5.1 read user-data measurement from jwtToken
+	userData := ""
+	userData, ok = token.Payload["x-ms-runtime"].(map[string]interface{})["user-data"].(string)
+	if !ok {
+		return true, true, true, false, fmt.Errorf("parsing x-ms-runtime.user-data in payload failed")
+	}
+	exptUserData = strings.ToUpper(exptUserData)
+	fmt.Println("UserData measurement:", userData)
+	fmt.Println("Expected UserData measurement:", exptUserData)
+	checkUserData := exptUserData == userData
+	return checkTee, checkPubkey, checkNonce, checkUserData, nil
+}
+
+/* validate MAA JWT  */
 func validateJWTwithPSH(jwtToken string) (bool, error) {
 	// 1. 保存当前工作目录
 	currentDir, err := os.Getwd()
@@ -661,4 +586,47 @@ func validateJWT(jwtToken string) (bool, error) {
 	}
 
 	return true, nil
+}
+
+func getPeerTeeType(jwtToken string) (string, error) {
+	// 1. 解析 JWT
+	token, err := parseJWT(jwtToken)
+	if err != nil {
+		return "", err
+	}
+
+	// 2. 读取 x-ms-isolation-tee.x-ms-compliance-status 字段
+	teeType, ok := token.Payload["x-ms-isolation-tee"].(map[string]interface{})["x-ms-attestation-type"].(string)
+	if !ok {
+		teeType, ok = token.Payload["x-ms-attestation-type"].(string)
+		if !ok {
+			return "", errors.New("missing x-ms-isolation-tee.x-ms-attestation-type in payload")
+		}
+	}
+
+	return teeType, nil
+}
+
+/* Calculate the expected value of the user_data */
+func calExptUserData(certPath string) string {
+	pubkey := callOpensslGetPubkey(certPath)
+	pubkey = extractPubkeyFromPem(pubkey)
+	fmt.Println("pubkey used in JSON object's value:", pubkey)
+	// Create JSON object
+	userDataJSON := map[string]string{
+		"user_data": pubkey,
+	}
+	//Marshal the map into JSON bytes
+	userDataJSONBytes, err := json.Marshal(userDataJSON)
+	if err != nil {
+		fmt.Println("Error marshalling user data JSON:", err)
+		return ""
+	}
+	fmt.Println("UserData JSON:", string(userDataJSONBytes))
+	//Calculate the SHA512 hash of the JSON string
+	hash := sha512.Sum512(userDataJSONBytes)
+	hashBytes := hash[:] //Convert [64] byte to []byte
+	hashHex := fmt.Sprintf("%x", hashBytes)
+
+	return hashHex
 }
