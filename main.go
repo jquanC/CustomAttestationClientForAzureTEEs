@@ -21,10 +21,12 @@ import (
 
 /* configuration const */
 const (
-	address       = "localhost:8072"
+	address       = "20.14.198.73:8072"
 	nonceClient   = "$Q9%*@JW#C%Y"              // don't need to change
 	clientCredDir = "./script/client-cred"      //folder path to read client credentials(certs)
 	serverCredDir = "./script/server-cred-recv" //folder path to store server credentials(certs)
+	mma_path      = "./script/mma_config.json"  //tdx mma config file
+	psh_script    = "./script"
 )
 
 // 定义签名算法映射
@@ -67,13 +69,31 @@ func main() {
 	receiveFile(conn, serverCredDir+"/node0-server.crt")
 
 	//4. call the system tool and obtain the return result, stored in JWTResult
-	//4.1 Command to call the "AttestationClient": sudo AttestationClient -n "nonce" -o token
 	extractPubkey := callOpensslGetPubkey(clientCredDir + "/node1-client.crt")
 	extractPubkey = extractPubkeyFromPem(extractPubkey)
 	fmt.Println("Extracted Public Key:", extractPubkey)
-	jwtResult := callSNPAttestationClient(serverNonce + extractPubkey)
+
+	machineName, err := os.Hostname()
+	fmt.Println("Machine Name:", machineName)
+	jwtResult := ""
+	if err != nil {
+		fmt.Println("Error getting machine name:", err)
+		return
+	}
+	if strings.Contains(strings.ToUpper(machineName), "SNP") {
+		fmt.Println("callSNPAttestationClient")
+		jwtResult = callSNPAttestationClient(serverNonce + extractPubkey)
+
+	} else if strings.Contains(strings.ToUpper(machineName), "TDX") {
+		fmt.Println("callTDXAttestationClient")
+		jwtResult = callTDXAttestationClient(serverNonce+extractPubkey, mma_path)
+	} else {
+		fmt.Println("Unsupported machine type")
+		return
+	}
 
 	//5. client send JWTResult to server
+	fmt.Println("Send self JWT Result:", jwtResult)
 	sendMessage(conn, jwtResult)
 
 	//6. receive server JWTResult and print it
@@ -186,6 +206,31 @@ func callSNPAttestationClient(nonce string) string {
 		return ""
 	}
 	return string(output)
+}
+
+/* to get TDX machine attestation JWT */
+func callTDXAttestationClient(nonce string, mma_path string) string {
+	nonce = ""
+	cmd := exec.Command("sudo", "TdxAttest", "-c", mma_path)
+	output, err := cmd.Output()
+	if err != nil {
+		fmt.Println("Error calling AttestationClient:", err)
+		return ""
+	}
+
+	oriOut := string(output)
+	startIndex := strings.Index(oriOut, "eyJhb")
+	extractedToken := ""
+	if startIndex != -1 {
+		// 提取从 "eyJhb" 开始到字符串末尾的内容
+		extractedToken = oriOut[startIndex:]
+		extractedToken = strings.TrimSpace(extractedToken)
+		fmt.Println("Extracted JWT Token:")
+		fmt.Println(extractedToken)
+	} else {
+		fmt.Println("JWT Token not found.")
+	}
+	return extractedToken
 }
 
 func saveFile(content, filename string) {
@@ -404,8 +449,8 @@ func validateJWTwithPSH(jwtToken string) (bool, error) {
 		return false, fmt.Errorf("failed to get current working directory: %v", err)
 	}
 
-	// 2. 设置工作目录
-	workDir := "/home/azureuser/.local/scriptsRealtedAzureAttest"
+	// 2. 设置工作目录 ("/home/azureuser/.local/scriptsRealtedAzureAttest")
+	workDir := psh_script
 	if err := os.Chdir(workDir); err != nil {
 		return false, fmt.Errorf("failed to change directory to %s: %v", workDir, err)
 	}
@@ -596,14 +641,17 @@ func getPeerTeeType(jwtToken string) (string, error) {
 	}
 
 	// 2. 读取 x-ms-isolation-tee.x-ms-compliance-status 字段
-	teeType, ok := token.Payload["x-ms-isolation-tee"].(map[string]interface{})["x-ms-attestation-type"].(string)
+	teeType, ok := token.Payload["x-ms-attestation-type"].(string)
 	if !ok {
-		teeType, ok = token.Payload["x-ms-attestation-type"].(string)
+		return "", errors.New("missing x-ms-attestation-type in payload")
+	}
+
+	if teeType != "tdxvm" { //SNP JWT Structure
+		teeType, ok = token.Payload["x-ms-isolation-tee"].(map[string]interface{})["x-ms-attestation-type"].(string)
 		if !ok {
 			return "", errors.New("missing x-ms-isolation-tee.x-ms-attestation-type in payload")
 		}
 	}
-
 	return teeType, nil
 }
 
