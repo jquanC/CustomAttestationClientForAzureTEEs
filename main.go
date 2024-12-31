@@ -17,10 +17,12 @@ import (
 )
 
 const (
-	address       = "localhost:8072"
+	address       = "0.0.0.0:8072" //"localhost:8072"
 	nonceServer   = "1P6*&%4u#w$M"
 	serverCreDir  = "./script/server-cred"      //folder path to read server credentials(certs)
 	clientCredDir = "./script/client-cred-recv" //folder path to store client credentials(certs)
+	mma_path      = "./script/maa_config.json"  //tdx mma config file
+	psh_script    = "./script"
 )
 
 // 定义签名算法映射
@@ -75,7 +77,22 @@ func main() {
 	extractPubkey := callOpensslGetPubkey(serverCreDir + "/node0-server.crt")
 	fmt.Print("Extracted pubkey test1:", extractPubkey)
 	extractPubkey = extractPubkeyFromPem(extractPubkey)
-	jwtResult := callSNPAttestationClient(clientNonce + extractPubkey)
+
+	machineName, err := os.Hostname()
+	jwtResult := ""
+	if err != nil {
+		fmt.Println("Error getting machine name:", err)
+		return
+	}
+	if strings.Contains(strings.ToUpper(machineName), "SNP") {
+		jwtResult = callSNPAttestationClient(clientNonce + extractPubkey)
+
+	} else if strings.Contains(strings.ToUpper(machineName), "TDX") {
+		jwtResult = callTDXAttestationClient(clientNonce+extractPubkey, mma_path)
+	} else {
+		fmt.Println("Unsupported machine type")
+		return
+	}
 
 	//5. server send JWTResult to client
 	sendMessage(conn, jwtResult)
@@ -193,6 +210,31 @@ func callSNPAttestationClient(nonce string) string {
 }
 func saveFile(content, filename string) {
 	ioutil.WriteFile(filename, []byte(content), 0644)
+}
+
+/* to get TDX machine attestation JWT */
+func callTDXAttestationClient(nonce string, mma_path string) string {
+	nonce = ""
+	cmd := exec.Command("sudo", "TdxAttest", "-c", mma_path)
+	output, err := cmd.Output()
+	if err != nil {
+		fmt.Println("Error calling AttestationClient:", err)
+		return ""
+	}
+
+	oriOut := string(output)
+	startIndex := strings.Index(oriOut, "eyJhb")
+	extractedToken := ""
+	if startIndex != -1 {
+		// 提取从 "eyJhb" 开始到字符串末尾的内容
+		extractedToken = oriOut[startIndex:]
+		extractedToken = strings.TrimSpace(extractedToken)
+		fmt.Println("Extracted JWT Token:")
+		fmt.Println(extractedToken)
+	} else {
+		fmt.Println("JWT Token not found.")
+	}
+	return extractedToken
 }
 
 /* validate MAA JWT  */
@@ -456,14 +498,17 @@ func getPeerTeeType(jwtToken string) (string, error) {
 	}
 
 	// 2. 读取 x-ms-isolation-tee.x-ms-compliance-status 字段
-	teeType, ok := token.Payload["x-ms-isolation-tee"].(map[string]interface{})["x-ms-attestation-type"].(string)
+	teeType, ok := token.Payload["x-ms-attestation-type"].(string)
 	if !ok {
-		teeType, ok = token.Payload["x-ms-attestation-type"].(string)
+		return "", errors.New("missing x-ms-attestation-type in payload")
+	}
+
+	if teeType != "tdxvm" { //SNP JWT Structure
+		teeType, ok = token.Payload["x-ms-isolation-tee"].(map[string]interface{})["x-ms-attestation-type"].(string)
 		if !ok {
 			return "", errors.New("missing x-ms-isolation-tee.x-ms-attestation-type in payload")
 		}
 	}
-
 	return teeType, nil
 }
 
