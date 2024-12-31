@@ -233,31 +233,6 @@ func callTDXAttestationClient(nonce string, mma_path string) string {
 	return extractedToken
 }
 
-/* to get TDX machine attestation JWT */
-func callTDXAttestationClient(nonce string, mma_path string) string {
-	nonce = ""
-	cmd := exec.Command("sudo", "TdxAttest", "-c", mma_path)
-	output, err := cmd.Output()
-	if err != nil {
-		fmt.Println("Error calling AttestationClient:", err)
-		return ""
-	}
-
-	oriOut := string(output)
-	startIndex := strings.Index(oriOut, "eyJhb")
-	extractedToken := ""
-	if startIndex != -1 {
-		// 提取从 "eyJhb" 开始到字符串末尾的内容
-		extractedToken = oriOut[startIndex:]
-		extractedToken = strings.TrimSpace(extractedToken)
-		fmt.Println("Extracted JWT Token:")
-		fmt.Println(extractedToken)
-	} else {
-		fmt.Println("JWT Token not found.")
-	}
-	return extractedToken
-}
-
 func saveFile(content, filename string) {
 	ioutil.WriteFile(filename, []byte(content), 0644)
 }
