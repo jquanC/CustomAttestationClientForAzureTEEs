@@ -21,7 +21,7 @@ const (
 	nonceServer   = "1P6*&%4u#w$M"
 	serverCreDir  = "./script/server-cred"      //folder path to read server credentials(certs)
 	clientCredDir = "./script/client-cred-recv" //folder path to store client credentials(certs)
-	mma_path      = "./script/maa_config.json"  //tdx mma config file
+	mma_path      = "./script/mma_config.json"  //tdx mma config file
 	psh_script    = "./script"
 )
 
@@ -79,15 +79,18 @@ func main() {
 	extractPubkey = extractPubkeyFromPem(extractPubkey)
 
 	machineName, err := os.Hostname()
+	fmt.Println("Machine Name:", machineName)
 	jwtResult := ""
 	if err != nil {
 		fmt.Println("Error getting machine name:", err)
 		return
 	}
 	if strings.Contains(strings.ToUpper(machineName), "SNP") {
+		fmt.Println("callSNPAttestationClient")
 		jwtResult = callSNPAttestationClient(clientNonce + extractPubkey)
 
 	} else if strings.Contains(strings.ToUpper(machineName), "TDX") {
+		fmt.Println("callTDXAttestationClient")
 		jwtResult = callTDXAttestationClient(clientNonce+extractPubkey, mma_path)
 	} else {
 		fmt.Println("Unsupported machine type")
@@ -95,6 +98,7 @@ func main() {
 	}
 
 	//5. server send JWTResult to client
+	fmt.Println("Send self JWT Result:", jwtResult)
 	sendMessage(conn, jwtResult)
 
 	//6. receive client JWTResult and print it
