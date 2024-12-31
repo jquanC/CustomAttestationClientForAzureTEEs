@@ -451,6 +451,8 @@ func validateJWTwithPSH(jwtToken string) (bool, error) {
 
 	// 2. 设置工作目录 ("/home/azureuser/.local/scriptsRealtedAzureAttest")
 	workDir := psh_script
+	// 2. 设置工作目录 ("/home/azureuser/.local/scriptsRealtedAzureAttest")
+	workDir := psh_script
 	if err := os.Chdir(workDir); err != nil {
 		return false, fmt.Errorf("failed to change directory to %s: %v", workDir, err)
 	}
