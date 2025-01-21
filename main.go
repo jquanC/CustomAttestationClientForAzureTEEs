@@ -17,12 +17,13 @@ import (
 )
 
 const (
-	address       = "0.0.0.0:8072" //"localhost:8072"
-	nonceServer   = "1P6*&%4u#w$M"
-	serverCreDir  = "./script/server-cred"      //folder path to read server credentials(certs)
-	clientCredDir = "./script/client-cred-recv" //folder path to store client credentials(certs)
-	mma_path      = "./script/mma_config.json"  //tdx mma config file
-	psh_script    = "./script"
+	address          = "0.0.0.0:8072" //"localhost:8072"
+	nonceServer      = "1P6*&%4u#w$M"
+	serverCreDir     = "./script/server-cred"      //folder path to read server credentials(certs)
+	clientCredDir    = "./script/client-cred-recv" //folder path to store client credentials(certs)
+	mma_path         = "./script/mma_config.json"  //tdx mma config file
+	psh_script       = "./script"
+	program_hashfile = "./script/client_hashOf_test-program"
 )
 
 // 定义签名算法映射
@@ -116,7 +117,7 @@ func main() {
 	//8. Check the JWT token claims
 	expectPubkey := callOpensslGetPubkey(clientCredDir + "/node1-client.crt")
 	expectPubkey = extractPubkeyFromPem(expectPubkey)
-	expectUserData := calExptUserData(clientCredDir + "/node1-client.crt")
+	expectUserData := calExptUserData(clientCredDir+"/node1-client.crt", program_hashfile)
 	checkTee, checkPubkey, checkNonce, checkUserData, err := extractAndCheckJWTCliams(clientJwtResult, expectPubkey, nonceServer, expectUserData) //client check Server's JWT claims,should be the clientNonce
 	if err != nil {
 		fmt.Println("Error checking JWT claims:", err)
@@ -517,13 +518,24 @@ func getPeerTeeType(jwtToken string) (string, error) {
 }
 
 /* Calculate the expected value of the user_data */
-func calExptUserData(certPath string) string {
+func calExptUserData(certPath string, hashFile string) string {
 	pubkey := callOpensslGetPubkey(certPath)
 	pubkey = extractPubkeyFromPem(pubkey)
 	fmt.Println("pubkey used in calExptUserData:", pubkey)
+
+	//read the content from hashfile path
+	hashValue, err := ioutil.ReadFile(hashFile)
+	if err != nil {
+		fmt.Println("Error reading hash file:", err)
+		return ""
+	}
+	// hashValue = bytes.TrimSpace(hashValue)
+	hashValueStr := strings.TrimSpace(string(hashValue))
+
 	// Create JSON object
-	userDataJSON := map[string]string{
-		"user_data": pubkey,
+	userDataJSON := map[string]string{ //map是无序的;实际顺序是：prigramID->pubkey;已调整TPM注入脚本
+		"pubkey":    pubkey,
+		"programID": hashValueStr,
 	}
 	//Marshal the map into JSON bytes
 	userDataJSONBytes, err := json.Marshal(userDataJSON)
